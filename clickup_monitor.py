@@ -3,9 +3,15 @@ import requests
 import time
 
 def run():
-    CLICKUP_TOKEN = os.getenv("CLICKUP_API_TOKEN")
-    headers = {"Authorization": CLICKUP_TOKEN}
+    token = os.getenv("CLICKUP_API_TOKEN")
     folder_id = os.getenv("CLICKUP_FOLDER_ID")
+    if not token or not folder_id:
+    print("CLICKUP_API_TOKEN/CLICKUP_FOLDER_ID не заданы — ClickUp монитор отключён")
+    return
+resp = requests.get(url, headers=headers, timeout=15)
+if not resp.ok:
+    print(f"[ClickUp error] {resp.status_code} {resp.text[:200]}")
+    time.sleep(90); continue
 
     while True:
         try:
