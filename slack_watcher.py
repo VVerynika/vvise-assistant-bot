@@ -4,6 +4,14 @@ import requests
 
 def run():
     SLACK_TOKEN = os.getenv("SLACK_TOKEN")
+if not SLACK_TOKEN:
+    print("SLACK_TOKEN не задан — Slack watcher отключён")
+    return
+resp = requests.get(channels_url, headers=headers, timeout=15)
+if not resp.ok:
+    print(f"[Slack error] {resp.status_code} {resp.text[:200]}")
+    time.sleep(60); continue
+    
     headers = {"Authorization": f"Bearer {SLACK_TOKEN}"}
     channels_url = "https://slack.com/api/conversations.list"
 
