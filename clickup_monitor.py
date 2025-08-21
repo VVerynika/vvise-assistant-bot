@@ -4,6 +4,7 @@ import time
 
 
 def run():
+
     CLICKUP_TOKEN = os.getenv("CLICKUP_API_TOKEN")
     folder_id = os.getenv("CLICKUP_FOLDER_ID")
     if not CLICKUP_TOKEN or not folder_id:
