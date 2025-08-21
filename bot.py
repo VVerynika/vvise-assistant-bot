@@ -3,6 +3,8 @@ import telebot
 from google_logger import log_message
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN is not set")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 @bot.message_handler(commands=['start'])
@@ -20,5 +22,6 @@ def echo_message(message):
     bot.reply_to(message, f"Ты сказал: {message.text}")
     log_message(message)
 
-print("Бот запущен...")
-bot.polling(none_stop=True)
+if __name__ == "__main__":
+    print("Бот запущен...")
+    bot.polling(none_stop=True, interval=0, timeout=60)
