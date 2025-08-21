@@ -39,4 +39,4 @@ def log_message(message):
         print("Лог записан в таблицу")
 
     except Exception as e:
-        print(f"❌ Ошибка при логировании в Google Sheets: {e}") в Google Sheets: {e}")
+        print(f"Ошибка при логировании в Google Sheets: {e}") в Google Sheets: {e}")
