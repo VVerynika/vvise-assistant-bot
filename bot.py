@@ -4,8 +4,8 @@ import telebot
 from google_logger import log_message
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-bot = None
 
+bot = None
 
 def _safe_text(message) -> str:
     try:
@@ -99,4 +99,5 @@ def run_polling():
 init_bot()
 
 if __name__ == "__main__":
+
     run_polling()

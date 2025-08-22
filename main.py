@@ -5,6 +5,7 @@ import sys
 import bot
 import slack_watcher
 import clickup_monitor
+from datetime import datetime
 
 stop_event = Event()
 
@@ -19,6 +20,7 @@ signal.signal(signal.SIGINT, handle_signal)
 
 
 if __name__ == "__main__":
+
     # Telegram bot thread (safe even if token missing)
     t_bot = Thread(target=bot.run_polling, daemon=True)
     t_slack = Thread(target=slack_watcher.run, daemon=True)

@@ -26,6 +26,7 @@ def _save_state(state):
 
 def run():
     SLACK_TOKEN = os.getenv("SLACK_TOKEN")
+
     if not SLACK_TOKEN:
         print("SLACK_TOKEN не задан — Slack watcher отключён")
         return
