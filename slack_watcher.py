@@ -2,6 +2,7 @@ import os
 import time
 import json
 import requests
+from storage import append_slack_message
 
 STATE_PATH = os.getenv("SLACK_STATE_FILE", "/workspace/.slack_state.json")
 
@@ -86,7 +87,16 @@ def run():
                     messages = data.get("messages", [])
                     # Slack возвращает от новых к старым; выведем в обратном порядке для хронологии
                     for msg in reversed(messages):
-                        print(f"[Slack] #{channel['name']}: {msg.get('text')}")
+                        text = msg.get('text') or ''
+                        append_slack_message({
+                            "channel": channel['name'],
+                            "channel_id": ch_id,
+                            "user": msg.get('user'),
+                            "text": text,
+                            "ts": msg.get('ts'),
+                            "last_reply_ts": (msg.get('thread_ts') or msg.get('ts')),
+                        })
+                        print(f"[Slack] #{channel['name']}: {text}")
                         ts = msg.get("ts")
                         if ts and (newest_seen_ts is None or ts > newest_seen_ts):
                             newest_seen_ts = ts

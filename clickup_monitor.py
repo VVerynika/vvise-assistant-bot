@@ -2,6 +2,7 @@ import os
 import time
 import json
 import requests
+from storage import append_clickup_task
 
 STATE_PATH = os.getenv("CLICKUP_STATE_FILE", "/workspace/.clickup_state.json")
 
@@ -56,7 +57,22 @@ def run():
                 if not tasks:
                     break
                 for task in tasks:
-                    print(f"[ClickUp] {task.get('name')} — {task.get('status', {}).get('status')}")
+                    name = task.get('name')
+                    status = (task.get('status') or {}).get('status')
+                    due = task.get('due_date')
+                    due_ts = None
+                    try:
+                        due_ts = int(due) / 1000.0 if due else None
+                    except Exception:
+                        due_ts = None
+                    append_clickup_task({
+                        "id": task.get('id'),
+                        "name": name,
+                        "description": task.get('text_content') or task.get('description') or '',
+                        "status": {"status": status},
+                        "due_date_ts": due_ts,
+                    })
+                    print(f"[ClickUp] {name} — {status}")
                     # track newest date_updated across tasks
                     try:
                         updated = task.get("date_updated")

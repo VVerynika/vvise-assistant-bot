@@ -35,37 +35,39 @@ def _extract_message_text(message) -> str:
         return "<unavailable message>"
 
 
+def _get_creds():
+    creds_json = os.getenv("GOOGLE_CREDS_JSON")
+    creds_file_path = os.getenv("RENDER_SECRET_FILE_SERVICE_ACCOUNT_JSON") or _detect_service_account_path()
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    if creds_json:
+        creds_dict = json.loads(creds_json)
+        return Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    if creds_file_path:
+        return Credentials.from_service_account_file(creds_file_path, scopes=scopes)
+    return None
+
+
+def _open_sheet():
+    sheet_id = os.getenv("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        return None, None
+    creds = _get_creds()
+    if not creds:
+        return None, None
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(sheet_id)
+    return sh, sh.sheet1
+
+
 def log_message(message):
     try:
-        sheet_id = os.getenv("GOOGLE_SHEET_ID")
-        creds_json = os.getenv("GOOGLE_CREDS_JSON")
-        # Backward compatible env; but if not set, try SERVICE_ACCOUNT_JSON_PATH or common defaults
-        creds_file_path = os.getenv("RENDER_SECRET_FILE_SERVICE_ACCOUNT_JSON") or _detect_service_account_path()
-
-        if not sheet_id:
-            print("GOOGLE_SHEET_ID не найден")
+        sh, worksheet = _open_sheet()
+        if not worksheet:
+            print("Google Sheets недоступен: проверьте переменные")
             return
-
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-
-        if creds_json:
-            # Используем строку из переменной окружения
-            creds_dict = json.loads(creds_json)
-            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        elif creds_file_path:
-            # Используем путь к файлу сервис-аккаунта
-            creds = Credentials.from_service_account_file(creds_file_path, scopes=scopes)
-        else:
-            print("Нет ни GOOGLE_CREDS_JSON, ни доступного service_account.json (попробуйте SERVICE_ACCOUNT_JSON_PATH)")
-            return
-
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(sheet_id)
-        worksheet = sh.sheet1
-
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         user = None
         try:
@@ -75,9 +77,19 @@ def log_message(message):
             user = None
         user = user or "<unknown>"
         content = _extract_message_text(message)
-
         worksheet.append_row([timestamp, user, content])
         print("Лог записан в таблицу")
-
     except Exception as e:
         print(f"Ошибка при логировании в Google Sheets: {e}")
+
+
+def log_event(source: str, event_type: str, severity: str, summary: str, extra: dict | None = None):
+    try:
+        sh, worksheet = _open_sheet()
+        if not worksheet:
+            return
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        payload = json.dumps(extra or {}, ensure_ascii=False)
+        worksheet.append_row([timestamp, source, event_type, severity, summary, payload])
+    except Exception as e:
+        print(f"Ошибка при логировании события в Google Sheets: {e}")
