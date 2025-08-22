@@ -33,8 +33,9 @@ def analyze_task(task):
     print(f"[{task_id}] {name} — {status} (обновлена: {updated_at})")
 
 
-def run_clickup_monitor():
+def run():
     print("🔍 Получаю задачи из ClickUp списка...")
     tasks = fetch_tasks_from_list()
     for task in tasks:
         analyze_task(task)
+
