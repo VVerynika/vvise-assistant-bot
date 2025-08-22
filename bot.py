@@ -2,6 +2,7 @@ import os
 import time
 import telebot
 from google_logger import log_message
+from notifier import send_startup_status
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = None
@@ -81,6 +82,7 @@ def run_polling():
     while True:
         try:
             print("Бот запущен...")
+            send_startup_status()
             bot.polling(none_stop=True, interval=0, timeout=60)
             backoff_seconds = 5
         except Exception as e:

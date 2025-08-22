@@ -62,6 +62,16 @@ def _open_sheet():
     return sh, sh.sheet1
 
 
+def _open_or_create_events_sheet(sh):
+    try:
+        for ws in sh.worksheets():
+            if ws.title == "Events":
+                return ws
+        return sh.add_worksheet(title="Events", rows=1000, cols=10)
+    except Exception:
+        return sh.sheet1
+
+
 def log_message(message):
     try:
         sh, worksheet = _open_sheet()
@@ -85,11 +95,25 @@ def log_message(message):
 
 def log_event(source: str, event_type: str, severity: str, summary: str, extra: dict | None = None):
     try:
-        sh, worksheet = _open_sheet()
-        if not worksheet:
+        sh, _ = _open_sheet()
+        if not sh:
             return
+        ws = _open_or_create_events_sheet(sh)
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        payload = json.dumps(extra or {}, ensure_ascii=False)
-        worksheet.append_row([timestamp, source, event_type, severity, summary, payload])
+        extra = extra or {}
+        row = [
+            timestamp,
+            source,
+            event_type,
+            severity,
+            summary,
+            str(extra.get("priority", "")),
+            extra.get("category", ""),
+            json.dumps(extra.get("linked_tasks", []), ensure_ascii=False),
+            str(extra.get("has_response", "")),
+            str(extra.get("thread_len", "")),
+            extra.get("deadline_status", ""),
+        ]
+        ws.append_row(row)
     except Exception as e:
         print(f"Ошибка при логировании события в Google Sheets: {e}")
