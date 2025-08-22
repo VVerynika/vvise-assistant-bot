@@ -7,21 +7,50 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = None
 
 
+def _safe_text(message) -> str:
+    try:
+        return getattr(message, 'text', None) or getattr(message, 'caption', None) or ""
+    except Exception:
+        return ""
+
+
 def register_handlers(b: telebot.TeleBot) -> None:
     @b.message_handler(commands=['start'])
     def handle_start(message):
-        b.reply_to(message, "Привет! Я готов работать.")
-        log_message(message)
+        try:
+            b.reply_to(message, "Привет! Я готов работать.")
+        except Exception as e:
+            print(f"[bot] reply error /start: {e}")
+        try:
+            log_message(message)
+        except Exception as e:
+            print(f"[bot] log error /start: {e}")
 
     @b.message_handler(commands=['ping'])
     def handle_ping(message):
-        b.reply_to(message, "👋 Я здесь. Готов работать.")
-        log_message(message)
+        try:
+            b.reply_to(message, "👋 Я здесь. Готов работать.")
+        except Exception as e:
+            print(f"[bot] reply error /ping: {e}")
+        try:
+            log_message(message)
+        except Exception as e:
+            print(f"[bot] log error /ping: {e}")
 
     @b.message_handler(func=lambda message: True)
     def echo_message(message):
-        b.reply_to(message, f"Ты сказал: {message.text}")
-        log_message(message)
+        text = _safe_text(message)
+        try:
+            if text:
+                b.reply_to(message, f"Ты сказал: {text}")
+            else:
+                b.reply_to(message, "Принял сообщение")
+        except Exception as e:
+            print(f"[bot] reply error echo: {e}")
+        try:
+            log_message(message)
+        except Exception as e:
+            print(f"[bot] log error echo: {e}")
 
 
 def init_bot():

@@ -2,7 +2,7 @@ import os
 import gspread
 import json
 from datetime import datetime
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
 
 def _detect_service_account_path() -> str:
@@ -25,6 +25,16 @@ def _detect_service_account_path() -> str:
     return ""
 
 
+def _extract_message_text(message) -> str:
+    try:
+        text = getattr(message, 'text', None) or getattr(message, 'caption', None)
+        if text is None:
+            return "<non-text message>"
+        return str(text)
+    except Exception:
+        return "<unavailable message>"
+
+
 def log_message(message):
     try:
         sheet_id = os.getenv("GOOGLE_SHEET_ID")
@@ -36,15 +46,18 @@ def log_message(message):
             print("GOOGLE_SHEET_ID не найден")
             return
 
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+
         if creds_json:
             # Используем строку из переменной окружения
             creds_dict = json.loads(creds_json)
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         elif creds_file_path:
             # Используем путь к файлу сервис-аккаунта
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-            creds = ServiceAccountCredentials.from_json_keyfile_name(creds_file_path, scope)
+            creds = Credentials.from_service_account_file(creds_file_path, scopes=scopes)
         else:
             print("Нет ни GOOGLE_CREDS_JSON, ни доступного service_account.json (попробуйте SERVICE_ACCOUNT_JSON_PATH)")
             return
@@ -54,8 +67,14 @@ def log_message(message):
         worksheet = sh.sheet1
 
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        user = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-        content = message.text
+        user = None
+        try:
+            if getattr(message, 'from_user', None):
+                user = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+        except Exception:
+            user = None
+        user = user or "<unknown>"
+        content = _extract_message_text(message)
 
         worksheet.append_row([timestamp, user, content])
         print("Лог записан в таблицу")
