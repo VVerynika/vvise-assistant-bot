@@ -1,32 +1,40 @@
 import os
 import requests
-import time
+from datetime import datetime
+
+CLICKUP_API_TOKEN = os.getenv("CLICKUP_API_TOKEN")
+CLICKUP_LIST_ID = os.getenv("CLICKUP_LIST_ID")
+
+HEADERS = {"Authorization": CLICKUP_API_TOKEN}
 
 
-def run():
+def fetch_tasks_from_list(list_id=CLICKUP_LIST_ID):
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    params = {"archived": "false"}
+    response = requests.get(url, headers=HEADERS, params=params)
+    response.raise_for_status()
+    return response.json().get("tasks", [])
 
-    CLICKUP_TOKEN = os.getenv("CLICKUP_API_TOKEN")
-    folder_id = os.getenv("CLICKUP_FOLDER_ID")
-    if not CLICKUP_TOKEN or not folder_id:
-        print("CLICKUP_API_TOKEN/CLICKUP_FOLDER_ID не заданы — ClickUp монитор отключён")
-        return
 
-    headers = {"Authorization": CLICKUP_TOKEN}
+def fetch_task_comments(task_id):
+    url = f"https://api.clickup.com/api/v2/task/{task_id}/comment"
+    response = requests.get(url, headers=HEADERS)
+    response.raise_for_status()
+    return response.json().get("comments", [])
 
-    backoff_seconds = 90
 
-    while True:
-        try:
-            url = f"https://api.clickup.com/api/v2/folder/{folder_id}/task"
-            resp = requests.get(url, headers=headers, timeout=15)
-            if not resp.ok:
-                print(f"[ClickUp error] {resp.status_code} {resp.text[:200]}")
-                time.sleep(backoff_seconds)
-                continue
-            tasks = resp.json().get("tasks", [])
-            for task in tasks:
-                print(f"[ClickUp] {task.get('name')} — {task.get('status', {}).get('status')}")
-            time.sleep(90)
-        except Exception as e:
-            print(f"[ClickUp exception] {e}")
-            time.sleep(backoff_seconds)
+def analyze_task(task):
+    task_id = task.get("id")
+    name = task.get("name")
+    status = task.get("status", {}).get("status")
+    updated = int(task.get("date_updated", 0))
+    updated_at = datetime.fromtimestamp(updated / 1000).strftime("%Y-%m-%d %H:%M")
+
+    print(f"[{task_id}] {name} — {status} (обновлена: {updated_at})")
+
+
+def run_clickup_monitor():
+    print("🔍 Получаю задачи из ClickUp списка...")
+    tasks = fetch_tasks_from_list()
+    for task in tasks:
+        analyze_task(task)
