@@ -4,7 +4,7 @@ import telebot
 from google_logger import log_message
 from notifier import send_startup_status
 from storage import set_slack_oldest_days, set_slack_oldest_ts, set_clickup_since_days, set_clickup_since_ms, propose_cleanup, soft_delete_threads
-from config import IMPORTANT_SLACK_CHANNEL_BUGS
+from config import IMPORTANT_SLACK_CHANNEL_BUGS, CLEANUP_OLDER_THAN_DAYS
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = None
@@ -36,7 +36,7 @@ def _unique_channels() -> list:
     return chans
 
 
-def _filter_candidates(channel_filter: str | None, rcmin: int | None):
+def _filter_candidates(channel_filter: str | None, rcmin: int | None, noresp_only: int | None, older_days: int | None):
     props = propose_cleanup()
     cands = props.get('candidates', [])
     if channel_filter and channel_filter != '*':
@@ -45,6 +45,14 @@ def _filter_candidates(channel_filter: str | None, rcmin: int | None):
         try:
             rcmin_i = int(rcmin)
             cands = [c for c in cands if int(c.get('reply_count', 0)) >= rcmin_i]
+        except Exception:
+            pass
+    if noresp_only:
+        cands = [c for c in cands if int(c.get('reply_count', 0)) == 0]
+    if older_days is not None and older_days > 0:
+        try:
+            threshold_ts = time.time() - int(older_days) * 86400
+            cands = [c for c in cands if float(c.get('last_ts', 0)) < threshold_ts]
         except Exception:
             pass
     return cands
@@ -131,36 +139,36 @@ def register_handlers(b: telebot.TeleBot) -> None:
             from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton(text="Удалить всё", callback_data="cleanup:all"))
-            # preset filter to bugs channel
-            kb.add(InlineKeyboardButton(text="Удалить выборочно", callback_data=f"cleanup:select:0:{IMPORTANT_SLACK_CHANNEL_BUGS}:0"))
+            # preset: bugs channel, rc>=0, noresp=0, older=CLEANUP_OLDER_THAN_DAYS
+            kb.add(InlineKeyboardButton(text="Удалить выборочно", callback_data=f"cleanup:select:0:{IMPORTANT_SLACK_CHANNEL_BUGS}:0:0:{CLEANUP_OLDER_THAN_DAYS}"))
             kb.add(InlineKeyboardButton(text="Отмена", callback_data="cleanup:cancel"))
             b.send_message(message.chat.id, f"Найдено кандидатов: {count}. Выберите действие:", reply_markup=kb)
         except Exception as e:
             b.reply_to(message, f"Ошибка: {e}")
 
-    def _render_select_page(chat_id, message_id, page, chan_filter, rcmin):
+    def _render_select_page(chat_id, message_id, page, chan_filter, rcmin, noresp, older):
         from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-        props = propose_cleanup()
-        cands = _filter_candidates(chan_filter, rcmin)
+        cands = _filter_candidates(chan_filter, rcmin, noresp, older)
         start = page * PAGE_SIZE
         end = start + PAGE_SIZE
         page_items = cands[start:end]
         kb = InlineKeyboardMarkup()
         # Filters row
-        kb.add(InlineKeyboardButton(text=f"Канал: {chan_filter}", callback_data=f"cleanup:cyclechan:{page}:{chan_filter}:{rcmin}"))
-        kb.add(InlineKeyboardButton(text=f"Мин. ответы: {rcmin}", callback_data=f"cleanup:cyclerc:{page}:{chan_filter}:{rcmin}"))
+        kb.add(InlineKeyboardButton(text=f"Канал: {chan_filter}", callback_data=f"cleanup:cyclechan:{page}:{chan_filter}:{rcmin}:{noresp}:{older}"))
+        kb.add(InlineKeyboardButton(text=f"Мин. ответы: {rcmin}", callback_data=f"cleanup:cyclerc:{page}:{chan_filter}:{rcmin}:{noresp}:{older}"))
+        kb.add(InlineKeyboardButton(text=f"Без ответов: {'On' if noresp else 'Off'}", callback_data=f"cleanup:cyclenoresp:{page}:{chan_filter}:{rcmin}:{noresp}:{older}"))
+        kb.add(InlineKeyboardButton(text=f"Старше: {older}д", callback_data=f"cleanup:cycleolder:{page}:{chan_filter}:{rcmin}:{noresp}:{older}"))
         # Items
         for c in page_items:
-            # mark mentions with a dot
             mention_mark = " • @" if c.get('mention_count', 0) else ''
             label = f"#{c['channel']}{mention_mark} | {_fmt_ts(c['last_ts'])} | repl:{c.get('reply_count',0)} len:{c.get('thread_len',0)}"
-            kb.add(InlineKeyboardButton(text=label, callback_data=f"cleanup:item:{c['channel_id']}:{c['thread_ts']}:{page}:{chan_filter}:{rcmin}"))
+            kb.add(InlineKeyboardButton(text=label, callback_data=f"cleanup:item:{c['channel_id']}:{c['thread_ts']}:{page}:{chan_filter}:{rcmin}:{noresp}:{older}"))
         # Nav
         nav = []
         if page > 0:
-            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"cleanup:page:{page-1}:{chan_filter}:{rcmin}"))
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"cleanup:page:{page-1}:{chan_filter}:{rcmin}:{noresp}:{older}"))
         if end < len(cands):
-            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"cleanup:page:{page+1}:{chan_filter}:{rcmin}"))
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"cleanup:page:{page+1}:{chan_filter}:{rcmin}:{noresp}:{older}"))
         if nav:
             kb.row(*nav)
         kb.add(InlineKeyboardButton(text="Готово", callback_data="cleanup:done"))
@@ -182,44 +190,77 @@ def register_handlers(b: telebot.TeleBot) -> None:
                 page = int(parts[2]) if len(parts) > 2 else 0
                 chan_filter = parts[3] if len(parts) > 3 else '*'
                 rcmin = int(parts[4]) if len(parts) > 4 else 0
-                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin)
+                noresp = int(parts[5]) if len(parts) > 5 else 0
+                older = int(parts[6]) if len(parts) > 6 else CLEANUP_OLDER_THAN_DAYS
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin, noresp, older)
             elif action == 'page':
                 page = int(parts[2])
                 chan_filter = parts[3] if len(parts) > 3 else '*'
                 rcmin = int(parts[4]) if len(parts) > 4 else 0
-                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin)
+                noresp = int(parts[5]) if len(parts) > 5 else 0
+                older = int(parts[6]) if len(parts) > 6 else CLEANUP_OLDER_THAN_DAYS
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin, noresp, older)
             elif action == 'item':
                 ch_id = parts[2]
                 th_ts = parts[3]
                 page = int(parts[4]) if len(parts) > 4 else 0
                 chan_filter = parts[5] if len(parts) > 5 else '*'
                 rcmin = int(parts[6]) if len(parts) > 6 else 0
+                noresp = int(parts[7]) if len(parts) > 7 else 0
+                older = int(parts[8]) if len(parts) > 8 else CLEANUP_OLDER_THAN_DAYS
                 soft_delete_threads([{ "thread_ts": th_ts, "channel_id": ch_id }])
                 b.answer_callback_query(call.id, "Удалено в архив")
-                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin)
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin, noresp, older)
             elif action == 'cyclechan':
                 page = int(parts[2])
                 chan_filter = parts[3]
                 rcmin = int(parts[4]) if len(parts) > 4 else 0
+                noresp = int(parts[5]) if len(parts) > 5 else 0
+                older = int(parts[6]) if len(parts) > 6 else CLEANUP_OLDER_THAN_DAYS
                 chans = ['*'] + _unique_channels()
                 try:
                     idx = chans.index(chan_filter)
                 except ValueError:
                     idx = 0
                 next_chan = chans[(idx + 1) % len(chans)] if chans else '*'
-                _render_select_page(call.message.chat.id, call.message.message_id, page, next_chan, rcmin)
+                _render_select_page(call.message.chat.id, call.message.message_id, page, next_chan, rcmin, noresp, older)
                 b.answer_callback_query(call.id)
             elif action == 'cyclerc':
                 page = int(parts[2])
                 chan_filter = parts[3]
                 rcmin = int(parts[4]) if len(parts) > 4 else 0
+                noresp = int(parts[5]) if len(parts) > 5 else 0
+                older = int(parts[6]) if len(parts) > 6 else CLEANUP_OLDER_THAN_DAYS
                 options = [0, 1, 3, 5]
                 try:
                     idx = options.index(rcmin)
                 except ValueError:
                     idx = 0
                 next_rc = options[(idx + 1) % len(options)]
-                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, next_rc)
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, next_rc, noresp, older)
+                b.answer_callback_query(call.id)
+            elif action == 'cyclenoresp':
+                page = int(parts[2])
+                chan_filter = parts[3]
+                rcmin = int(parts[4]) if len(parts) > 4 else 0
+                noresp = int(parts[5]) if len(parts) > 5 else 0
+                older = int(parts[6]) if len(parts) > 6 else CLEANUP_OLDER_THAN_DAYS
+                next_noresp = 0 if noresp else 1
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin, next_noresp, older)
+                b.answer_callback_query(call.id)
+            elif action == 'cycleolder':
+                page = int(parts[2])
+                chan_filter = parts[3]
+                rcmin = int(parts[4]) if len(parts) > 4 else 0
+                noresp = int(parts[5]) if len(parts) > 5 else 0
+                older = int(parts[6]) if len(parts) > 6 else CLEANUP_OLDER_THAN_DAYS
+                options = [7, 14, 30, 60]
+                try:
+                    idx = options.index(older)
+                except ValueError:
+                    idx = 0
+                next_older = options[(idx + 1) % len(options)]
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin, noresp, next_older)
                 b.answer_callback_query(call.id)
             elif action == 'done':
                 b.answer_callback_query(call.id, "Готово")
