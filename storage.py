@@ -3,9 +3,10 @@ import json
 import threading
 import time
 import hashlib
+import fcntl
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
-from config import CLEANUP_PRIORITY_MAX, CLEANUP_NO_RESPONSE_SECS, CLEANUP_OLDER_THAN_DAYS, CLEANUP_RETENTION_DAYS
+from config import CLEANUP_PRIORITY_MAX, CLEANUP_NO_RESPONSE_SECS, CLEANUP_OLDER_THAN_DAYS, CLEANUP_RETENTION_DAYS, MAX_SLACK_THREADS, MAX_CLICKUP_TASKS
 
 _DB_PATH = os.getenv("STORAGE_DB_FILE", "/workspace/.vvise_assistant_store.json")
 _lock = threading.Lock()
@@ -33,17 +34,40 @@ def _compute_hash(obj: Any) -> str:
         return ""
 
 
+def _read_file_locked() -> Dict[str, Any]:
+    # cross-process advisory lock
+    with open(_DB_PATH, "a+", encoding="utf-8") as f:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f.seek(0)
+            data = f.read() or ""
+            if data.strip():
+                db = json.loads(data)
+            else:
+                db = _empty_db()
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    return db
+
+
+def _write_file_locked(db: Dict[str, Any]) -> None:
+    tmp = _DB_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        json.dump(db, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    os.replace(tmp, _DB_PATH)
+
+
 def _load_db() -> Dict[str, Any]:
     global _cache, _cache_mtime
     try:
-        mtime = os.path.getmtime(_DB_PATH) if os.path.exists(_DB_PATH) else None
-        if _cache and _cache_mtime and mtime == _cache_mtime:
-            return _cache
-        if os.path.exists(_DB_PATH):
-            with open(_DB_PATH, "r", encoding="utf-8") as f:
-                db = json.load(f)
-        else:
-            db = _empty_db()
+        if not os.path.exists(_DB_PATH):
+            # ensure file exists
+            _write_file_locked(_empty_db())
+        db = _read_file_locked()
     except Exception:
         db = _empty_db()
     if db.get("schema_version") != _SCHEMA_VERSION:
@@ -53,12 +77,23 @@ def _load_db() -> Dict[str, Any]:
                 migrated[key] = db[key]
         db = migrated
     _cache = db
-    _cache_mtime = os.path.getmtime(_DB_PATH) if os.path.exists(_DB_PATH) else time.time()
+    _cache_mtime = time.time()
     return db
+
+
+def _compact(db: Dict[str, Any]) -> None:
+    # cap sizes
+    st = db.get("slack_threads", [])
+    if len(st) > MAX_SLACK_THREADS:
+        db["slack_threads"] = st[-MAX_SLACK_THREADS:]
+    ct = db.get("clickup_tasks", [])
+    if len(ct) > MAX_CLICKUP_TASKS:
+        db["clickup_tasks"] = ct[-MAX_CLICKUP_TASKS:]
 
 
 def _save_db(db: Dict[str, Any]) -> None:
     db["schema_version"] = _SCHEMA_VERSION
+    _compact(db)
     db["analysis_state"]["slack_count"] = len(db.get("slack_threads", []))
     db["analysis_state"]["clickup_count"] = len(db.get("clickup_tasks", []))
     db["analysis_state"]["db_hash"] = _compute_hash({
@@ -67,42 +102,46 @@ def _save_db(db: Dict[str, Any]) -> None:
         "deleted_slack_threads": db.get("deleted_slack_threads", []),
         "ingest_config": db.get("ingest_config", {}),
     })
-    tmp = _DB_PATH + ".tmp"
+    # write under process lock to serialize read-modify-write
     with _lock:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(db, f, ensure_ascii=False)
-        os.replace(tmp, _DB_PATH)
+        _write_file_locked(db)
     global _cache, _cache_mtime
     _cache = db
-    _cache_mtime = os.path.getmtime(_DB_PATH)
+    _cache_mtime = time.time()
 
 
 def append_slack_thread(thread_obj: Dict[str, Any]) -> None:
-    db = _load_db()
-    threads = db.setdefault("slack_threads", [])
-    key_ts = thread_obj.get("thread_ts")
-    key_ch = thread_obj.get("channel_id")
-    for idx, t in enumerate(threads):
-        if t.get("thread_ts") == key_ts and t.get("channel_id") == key_ch:
-            threads[idx] = thread_obj
-            _save_db(db)
-            return
-    threads.append(thread_obj)
-    _save_db(db)
+    with _lock:
+        db = _load_db()
+        threads = db.setdefault("slack_threads", [])
+        key_ts = thread_obj.get("thread_ts")
+        key_ch = thread_obj.get("channel_id")
+        replaced = False
+        for idx, t in enumerate(threads):
+            if t.get("thread_ts") == key_ts and t.get("channel_id") == key_ch:
+                threads[idx] = thread_obj
+                replaced = True
+                break
+        if not replaced:
+            threads.append(thread_obj)
+        _save_db(db)
 
 
 def upsert_clickup_task(task: Dict[str, Any]) -> None:
-    db = _load_db()
-    tasks = db.setdefault("clickup_tasks", [])
-    tid = task.get("id")
-    if tid:
-        for i, t in enumerate(tasks):
-            if t.get("id") == tid:
-                tasks[i] = task
-                _save_db(db)
-                return
-    tasks.append(task)
-    _save_db(db)
+    with _lock:
+        db = _load_db()
+        tasks = db.setdefault("clickup_tasks", [])
+        tid = task.get("id")
+        replaced = False
+        if tid:
+            for i, t in enumerate(tasks):
+                if t.get("id") == tid:
+                    tasks[i] = task
+                    replaced = True
+                    break
+        if not replaced:
+            tasks.append(task)
+        _save_db(db)
 
 
 def read_all() -> Dict[str, Any]:
@@ -110,9 +149,10 @@ def read_all() -> Dict[str, Any]:
 
 
 def update_analysis_state(last_analysis_ts: float) -> None:
-    db = _load_db()
-    db.setdefault("analysis_state", {})["last_analysis_ts"] = last_analysis_ts
-    _save_db(db)
+    with _lock:
+        db = _load_db()
+        db.setdefault("analysis_state", {})["last_analysis_ts"] = last_analysis_ts
+        _save_db(db)
 
 
 def propose_cleanup(now_ts: Optional[float] = None) -> Dict[str, Any]:
@@ -139,52 +179,57 @@ def propose_cleanup(now_ts: Optional[float] = None) -> Dict[str, Any]:
                 "last_ts": last_ts,
                 "reply_count": th.get("reply_count", 0),
                 "thread_len": len(msgs),
+                "mention_count": th.get("mention_count", 0),
             })
     return {"candidates": candidates, "count": len(candidates)}
 
 
 def soft_delete_threads(threads_keys: List[Dict[str, str]]) -> None:
-    db = _load_db()
-    remaining = []
-    deleted = db.setdefault("deleted_slack_threads", [])
-    for th in db.get("slack_threads", []):
-        key = {"thread_ts": th.get("thread_ts"), "channel_id": th.get("channel_id")}
-        if key in threads_keys:
-            th["deleted_at_ts"] = time.time()
-            deleted.append(th)
-        else:
-            remaining.append(th)
-    db["slack_threads"] = remaining
-    _save_db(db)
+    with _lock:
+        db = _load_db()
+        remaining = []
+        deleted = db.setdefault("deleted_slack_threads", [])
+        for th in db.get("slack_threads", []):
+            key = {"thread_ts": th.get("thread_ts"), "channel_id": th.get("channel_id")}
+            if key in threads_keys:
+                th["deleted_at_ts"] = time.time()
+                deleted.append(th)
+            else:
+                remaining.append(th)
+        db["slack_threads"] = remaining
+        _save_db(db)
 
 
 def purge_deleted_expired(now_ts: Optional[float] = None) -> int:
-    db = _load_db()
-    now_ts = now_ts or time.time()
-    keep = []
-    removed = 0
-    for th in db.get("deleted_slack_threads", []):
-        if th.get("deleted_at_ts") and now_ts - float(th["deleted_at_ts"]) > CLEANUP_RETENTION_DAYS * 86400:
-            removed += 1
-        else:
-            keep.append(th)
-    db["deleted_slack_threads"] = keep
-    _save_db(db)
-    return removed
+    with _lock:
+        db = _load_db()
+        now_ts = now_ts or time.time()
+        keep = []
+        removed = 0
+        for th in db.get("deleted_slack_threads", []):
+            if th.get("deleted_at_ts") and now_ts - float(th["deleted_at_ts"]) > CLEANUP_RETENTION_DAYS * 86400:
+                removed += 1
+            else:
+                keep.append(th)
+        db["deleted_slack_threads"] = keep
+        _save_db(db)
+        return removed
 
 
 # Ingest config helpers
 
 def set_slack_oldest_days(days: int) -> None:
-    db = _load_db()
-    db.setdefault("ingest_config", {})["slack_oldest_ts"] = time.time() - days * 86400
-    _save_db(db)
+    with _lock:
+        db = _load_db()
+        db.setdefault("ingest_config", {})["slack_oldest_ts"] = time.time() - days * 86400
+        _save_db(db)
 
 
 def set_slack_oldest_ts(ts: float) -> None:
-    db = _load_db()
-    db.setdefault("ingest_config", {})["slack_oldest_ts"] = ts
-    _save_db(db)
+    with _lock:
+        db = _load_db()
+        db.setdefault("ingest_config", {})["slack_oldest_ts"] = ts
+        _save_db(db)
 
 
 def get_slack_oldest_ts() -> Optional[float]:
@@ -193,15 +238,17 @@ def get_slack_oldest_ts() -> Optional[float]:
 
 
 def set_clickup_since_days(days: int) -> None:
-    db = _load_db()
-    db.setdefault("ingest_config", {})["clickup_since_ms"] = int((time.time() - days * 86400) * 1000)
-    _save_db(db)
+    with _lock:
+        db = _load_db()
+        db.setdefault("ingest_config", {})["clickup_since_ms"] = int((time.time() - days * 86400) * 1000)
+        _save_db(db)
 
 
 def set_clickup_since_ms(ms: int) -> None:
-    db = _load_db()
-    db.setdefault("ingest_config", {})["clickup_since_ms"] = ms
-    _save_db(db)
+    with _lock:
+        db = _load_db()
+        db.setdefault("ingest_config", {})["clickup_since_ms"] = ms
+        _save_db(db)
 
 
 def get_clickup_since_ms() -> Optional[int]:

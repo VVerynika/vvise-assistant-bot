@@ -5,6 +5,21 @@ from datetime import datetime
 from config import ADMIN_TELEGRAM_CHAT_ID
 
 
+_MD_SPECIALS = "_[]()~`>#+-=|{}.!"  # broad set for MarkdownV2; we use Markdown (basic), safe to escape
+
+
+def _escape_markdown(text: str) -> str:
+    if not isinstance(text, str):
+        text = str(text)
+    out = []
+    for ch in text:
+        if ch in _MD_SPECIALS:
+            out.append(f"\\{ch}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _bot():
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
@@ -21,7 +36,8 @@ def send_message(text: str, markdown: bool = True):
         return
     try:
         if markdown:
-            b.send_message(ADMIN_TELEGRAM_CHAT_ID, text, parse_mode="Markdown")
+            safe_text = _escape_markdown(text)
+            b.send_message(ADMIN_TELEGRAM_CHAT_ID, safe_text, parse_mode="Markdown")
         else:
             b.send_message(ADMIN_TELEGRAM_CHAT_ID, text)
     except Exception as e:
@@ -38,11 +54,12 @@ def format_summary(analysis: Dict[str, Any]) -> str:
     items = analysis.get("items", [])[:10]
     parts.append("*Приоритетные пункты:*\n")
     for it in items:
-        src = it.get("source")
+        src = _escape_markdown(it.get("source"))
         title = it.get("text") or it.get("name") or "(без текста)"
+        title = _escape_markdown(title[:120])
         pr = it.get("priority", 0)
-        cls = it.get("class") or ""
-        parts.append(f"- [{src}] *{title[:120]}* _(prio {pr})_ {cls}")
+        cls = _escape_markdown(it.get("class") or "")
+        parts.append(f"- [{src}] *{title}* _(prio {pr})_ {cls}")
     for sug in analysis.get("suggestions", []):
-        parts.append(f"→ {sug}")
+        parts.append(_escape_markdown(f"→ {sug}"))
     return "\n".join(parts)

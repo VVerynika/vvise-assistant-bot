@@ -26,6 +26,21 @@ def _save_state(state):
         pass
 
 
+def _get(url, headers, timeout=20):
+    backoff = 2
+    while True:
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code == 429:
+            retry_after = int(r.headers.get("Retry-After", "30"))
+            time.sleep(retry_after)
+            continue
+        if 500 <= r.status_code < 600:
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            continue
+        return r
+
+
 def run():
     SLACK_TOKEN = os.getenv("SLACK_TOKEN")
     if not SLACK_TOKEN:
@@ -42,19 +57,12 @@ def run():
 
     while True:
         try:
-            # Получим список каналов с пагинацией
             channels = []
             next_cursor = None
             while True:
                 url = channels_url + (f"&cursor={next_cursor}" if next_cursor else "")
-                resp = requests.get(url, headers=headers, timeout=20)
-                if resp.status_code == 429:
-                    retry_after = int(resp.headers.get("Retry-After", "30"))
-                    print(f"[Slack 429] conversations.list, sleep {retry_after}s")
-                    time.sleep(retry_after)
-                    continue
+                resp = _get(url, headers=headers)
                 if not resp.ok:
-                    print(f"[Slack error] {resp.status_code} {resp.text[:200]}")
                     time.sleep(backoff_seconds)
                     break
                 data = resp.json()
@@ -63,7 +71,6 @@ def run():
                 if not next_cursor:
                     break
 
-            # Для каждого канала, читаем историю с учётом last_ts и manual_oldest
             for channel in channels:
                 ch_id = channel['id']
                 latest_known = last_ts_by_channel.get(ch_id)
@@ -76,19 +83,12 @@ def run():
 
                 while True:
                     url = history_url + (f"&cursor={next_cursor}" if next_cursor else "")
-                    resp = requests.get(url, headers=headers, timeout=20)
-                    if resp.status_code == 429:
-                        retry_after = int(resp.headers.get("Retry-After", "30"))
-                        print(f"[Slack 429] conversations.history, sleep {retry_after}s")
-                        time.sleep(retry_after)
-                        continue
+                    resp = _get(url, headers=headers)
                     if not resp.ok:
-                        print(f"[Slack error] {resp.status_code} {resp.text[:200]}")
                         time.sleep(backoff_seconds)
                         break
                     data = resp.json()
                     messages = data.get("messages", [])
-                    # Сгруппируем в треды
                     for msg in messages:
                         parent_ts = msg.get('thread_ts') or msg.get('ts')
                         is_parent = parent_ts == msg.get('ts')
@@ -103,14 +103,8 @@ def run():
                                 rcur = None
                                 while True:
                                     rurl = repl_url + (f"&cursor={rcur}" if rcur else "")
-                                    r = requests.get(rurl, headers=headers, timeout=20)
-                                    if r.status_code == 429:
-                                        retry_after = int(r.headers.get("Retry-After", "30"))
-                                        print(f"[Slack 429] conversations.replies, sleep {retry_after}s")
-                                        time.sleep(retry_after)
-                                        continue
+                                    r = _get(rurl, headers=headers)
                                     if not r.ok:
-                                        print(f"[Slack error] {r.status_code} {r.text[:200]}")
                                         break
                                     rdata = r.json()
                                     for rm in rdata.get('messages', [])[1:]:
@@ -119,7 +113,6 @@ def run():
                                     if not rcur:
                                         break
                             has_response = (len(thread_msgs) > 1)
-                            # mentions
                             mention_count = 0
                             try:
                                 for m in thread_msgs:

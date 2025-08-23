@@ -25,6 +25,21 @@ def _save_state(state):
         pass
 
 
+def _get(url, headers, timeout=20):
+    backoff = 2
+    while True:
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code in (429, 408):
+            retry_after = int(r.headers.get("Retry-After", "10"))
+            time.sleep(retry_after)
+            continue
+        if 500 <= r.status_code < 600:
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            continue
+        return r
+
+
 def run():
     CLICKUP_TOKEN = os.getenv("CLICKUP_API_TOKEN")
     folder_id = os.getenv("CLICKUP_FOLDER_ID")
@@ -47,9 +62,8 @@ def run():
                 url = f"https://api.clickup.com/api/v2/folder/{folder_id}/task?page={page}&subtasks=true&include_closed=true"
                 if manual_since_ms:
                     url += f"&date_updated_gt={manual_since_ms}"
-                resp = requests.get(url, headers=headers, timeout=20)
+                resp = _get(url, headers=headers)
                 if not resp.ok:
-                    print(f"[ClickUp error] {resp.status_code} {resp.text[:200]}")
                     time.sleep(backoff_seconds)
                     break
                 data = resp.json()
@@ -69,7 +83,7 @@ def run():
                     # checklists
                     checklists = []
                     try:
-                        ckl = requests.get(f"https://api.clickup.com/api/v2/task/{tid}/checklist", headers=headers, timeout=20)
+                        ckl = _get(f"https://api.clickup.com/api/v2/task/{tid}/checklist", headers=headers)
                         if ckl.ok:
                             cldata = ckl.json()
                             checklists = cldata.get('checklists', []) or cldata.get('checklist', []) or []
@@ -78,14 +92,13 @@ def run():
                     # comments
                     comments = []
                     try:
-                        cm = requests.get(f"https://api.clickup.com/api/v2/task/{tid}/comment", headers=headers, timeout=20)
+                        cm = _get(f"https://api.clickup.com/api/v2/task/{tid}/comment", headers=headers)
                         if cm.ok:
                             cdata = cm.json()
                             comments = cdata.get('comments', []) or []
                     except Exception:
                         pass
                     description = task.get('text_content') or task.get('description') or ''
-                    # upsert enriched
                     upsert_clickup_task({
                         "id": tid,
                         "name": name,
