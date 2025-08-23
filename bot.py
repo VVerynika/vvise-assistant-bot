@@ -8,6 +8,8 @@ from storage import set_slack_oldest_days, set_slack_oldest_ts, set_clickup_sinc
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = None
 
+PAGE_SIZE = 10
+
 
 def _safe_text(message) -> str:
     try:
@@ -41,12 +43,26 @@ def register_handlers(b: telebot.TeleBot) -> None:
 
     @b.message_handler(commands=['ingest'])
     def handle_ingest(message):
-        # Показать кнопки выбора периода
         try:
             from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
             kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton(text="Slack: 3 дня", callback_data="ingest:slack:3"), InlineKeyboardButton(text="Slack: 7 дней", callback_data="ingest:slack:7"))
-            kb.add(InlineKeyboardButton(text="ClickUp: 7 дней", callback_data="ingest:clickup:7"), InlineKeyboardButton(text="ClickUp: 14 дней", callback_data="ingest:clickup:14"))
+            kb.row_width = 2
+            kb.add(
+                InlineKeyboardButton(text="Slack: 1д", callback_data="ingest:slack:1"),
+                InlineKeyboardButton(text="Slack: 3д", callback_data="ingest:slack:3"),
+            )
+            kb.add(
+                InlineKeyboardButton(text="Slack: 7д", callback_data="ingest:slack:7"),
+                InlineKeyboardButton(text="Slack: 30д", callback_data="ingest:slack:30"),
+            )
+            kb.add(
+                InlineKeyboardButton(text="ClickUp: 7д", callback_data="ingest:clickup:7"),
+                InlineKeyboardButton(text="ClickUp: 14д", callback_data="ingest:clickup:14"),
+            )
+            kb.add(
+                InlineKeyboardButton(text="ClickUp: 30д", callback_data="ingest:clickup:30"),
+                InlineKeyboardButton(text="Отмена", callback_data="ingest:cancel"),
+            )
             b.send_message(message.chat.id, "Выберите период для чтения:", reply_markup=kb)
         except Exception as e:
             b.reply_to(message, f"Ошибка: {e}")
@@ -54,8 +70,14 @@ def register_handlers(b: telebot.TeleBot) -> None:
     @b.callback_query_handler(func=lambda c: c.data and c.data.startswith('ingest:'))
     def on_ingest_click(call):
         try:
-            _, target, days_str = call.data.split(':')
-            days = int(days_str)
+            parts = call.data.split(':')
+            action = parts[1]
+            if action == 'cancel':
+                b.answer_callback_query(call.id, "Отменено")
+                b.edit_message_text("Отменено", chat_id=call.message.chat.id, message_id=call.message.message_id)
+                return
+            target = parts[1]
+            days = int(parts[2])
             if target == 'slack':
                 set_slack_oldest_days(days)
                 b.answer_callback_query(call.id, f"Slack: {days}д")
@@ -68,7 +90,6 @@ def register_handlers(b: telebot.TeleBot) -> None:
 
     @b.message_handler(commands=['cleanup'])
     def handle_cleanup(message):
-        # Предложить список кандидатов и inline-кнопки (включая выборочно)
         try:
             props = propose_cleanup()
             count = props.get('count', 0)
@@ -78,17 +99,39 @@ def register_handlers(b: telebot.TeleBot) -> None:
             from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton(text="Удалить всё", callback_data="cleanup:all"))
-            kb.add(InlineKeyboardButton(text="Удалить выборочно", callback_data="cleanup:select"))
+            kb.add(InlineKeyboardButton(text="Удалить выборочно", callback_data="cleanup:select:0"))
             kb.add(InlineKeyboardButton(text="Отмена", callback_data="cleanup:cancel"))
             b.send_message(message.chat.id, f"Найдено кандидатов: {count}. Выберите действие:", reply_markup=kb)
         except Exception as e:
             b.reply_to(message, f"Ошибка: {e}")
 
+    def _render_select_page(chat_id, message_id, page):
+        from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+        props = propose_cleanup()
+        cands = props.get('candidates', [])
+        start = page * PAGE_SIZE
+        end = start + PAGE_SIZE
+        page_items = cands[start:end]
+        kb = InlineKeyboardMarkup()
+        for c in page_items:
+            label = f"#{c['channel']} ts={c['thread_ts']}"
+            kb.add(InlineKeyboardButton(text=label, callback_data=f"cleanup:item:{c['channel_id']}:{c['thread_ts']}:{page}"))
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"cleanup:page:{page-1}"))
+        if end < len(cands):
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"cleanup:page:{page+1}"))
+        if nav:
+            kb.row(*nav)
+        kb.add(InlineKeyboardButton(text="Готово", callback_data="cleanup:done"))
+        kb.add(InlineKeyboardButton(text="Отмена", callback_data="cleanup:cancel"))
+        b.edit_message_text("Выберите треды для удаления:", chat_id=chat_id, message_id=message_id, reply_markup=kb)
+
     @b.callback_query_handler(func=lambda c: c.data and c.data.startswith('cleanup:'))
     def on_cleanup_click(call):
         try:
-            action = call.data.split(':', 1)[1]
-            from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+            parts = call.data.split(':')
+            action = parts[1]
             if action == 'all':
                 props = propose_cleanup()
                 keys = [{"thread_ts": c["thread_ts"], "channel_id": c["channel_id"]} for c in props.get('candidates', [])]
@@ -96,18 +139,18 @@ def register_handlers(b: telebot.TeleBot) -> None:
                 b.answer_callback_query(call.id, "Удалено в архив")
                 b.edit_message_text("✅ Перемещено в архив. Будет удалено через 7 дней.", chat_id=call.message.chat.id, message_id=call.message.message_id)
             elif action == 'select':
-                props = propose_cleanup()
-                kb = InlineKeyboardMarkup()
-                # первые 10 кандидатов для примера
-                for c in props.get('candidates', [])[:10]:
-                    label = f"#{c['channel']} ts={c['thread_ts']}"
-                    kb.add(InlineKeyboardButton(text=label, callback_data=f"cleanup:item:{c['channel_id']}:{c['thread_ts']}"))
-                kb.add(InlineKeyboardButton(text="Готово", callback_data="cleanup:done"))
-                b.edit_message_text("Выберите треды для удаления:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=kb)
-            elif action.startswith('item:'):
-                _, ch_id, th_ts = action.split(':', 2)
+                page = int(parts[2]) if len(parts) > 2 else 0
+                _render_select_page(call.message.chat.id, call.message.message_id, page)
+            elif action == 'page':
+                page = int(parts[2])
+                _render_select_page(call.message.chat.id, call.message.message_id, page)
+            elif action == 'item':
+                ch_id = parts[2]
+                th_ts = parts[3]
+                page = int(parts[4]) if len(parts) > 4 else 0
                 soft_delete_threads([{ "thread_ts": th_ts, "channel_id": ch_id }])
                 b.answer_callback_query(call.id, "Удалено в архив")
+                _render_select_page(call.message.chat.id, call.message.message_id, page)
             elif action == 'done':
                 b.answer_callback_query(call.id, "Готово")
                 b.edit_message_text("✅ Выбранные треды перемещены в архив.", chat_id=call.message.chat.id, message_id=call.message.message_id)
