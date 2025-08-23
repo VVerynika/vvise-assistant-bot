@@ -25,6 +25,30 @@ def _fmt_ts(tsf: float) -> str:
         return str(tsf)
 
 
+def _unique_channels() -> list:
+    props = propose_cleanup()
+    chans = []
+    for c in props.get('candidates', []):
+        name = c.get('channel') or ''
+        if name and name not in chans:
+            chans.append(name)
+    return chans
+
+
+def _filter_candidates(channel_filter: str | None, rcmin: int | None):
+    props = propose_cleanup()
+    cands = props.get('candidates', [])
+    if channel_filter and channel_filter != '*':
+        cands = [c for c in cands if c.get('channel') == channel_filter]
+    if rcmin is not None:
+        try:
+            rcmin_i = int(rcmin)
+            cands = [c for c in cands if int(c.get('reply_count', 0)) >= rcmin_i]
+        except Exception:
+            pass
+    return cands
+
+
 def register_handlers(b: telebot.TeleBot) -> None:
     @b.message_handler(commands=['start'])
     def handle_start(message):
@@ -106,28 +130,32 @@ def register_handlers(b: telebot.TeleBot) -> None:
             from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton(text="Удалить всё", callback_data="cleanup:all"))
-            kb.add(InlineKeyboardButton(text="Удалить выборочно", callback_data="cleanup:select:0"))
+            kb.add(InlineKeyboardButton(text="Удалить выборочно", callback_data="cleanup:select:0:*:0"))
             kb.add(InlineKeyboardButton(text="Отмена", callback_data="cleanup:cancel"))
             b.send_message(message.chat.id, f"Найдено кандидатов: {count}. Выберите действие:", reply_markup=kb)
         except Exception as e:
             b.reply_to(message, f"Ошибка: {e}")
 
-    def _render_select_page(chat_id, message_id, page):
+    def _render_select_page(chat_id, message_id, page, chan_filter, rcmin):
         from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-        props = propose_cleanup()
-        cands = props.get('candidates', [])
+        cands = _filter_candidates(chan_filter, rcmin)
         start = page * PAGE_SIZE
         end = start + PAGE_SIZE
         page_items = cands[start:end]
         kb = InlineKeyboardMarkup()
+        # Filters row
+        kb.add(InlineKeyboardButton(text=f"Канал: {chan_filter}", callback_data=f"cleanup:cyclechan:{page}:{chan_filter}:{rcmin}"))
+        kb.add(InlineKeyboardButton(text=f"Мин. ответы: {rcmin}", callback_data=f"cleanup:cyclerc:{page}:{chan_filter}:{rcmin}"))
+        # Items
         for c in page_items:
             label = f"#{c['channel']} | {_fmt_ts(c['last_ts'])} | repl:{c.get('reply_count',0)} len:{c.get('thread_len',0)}"
-            kb.add(InlineKeyboardButton(text=label, callback_data=f"cleanup:item:{c['channel_id']}:{c['thread_ts']}:{page}"))
+            kb.add(InlineKeyboardButton(text=label, callback_data=f"cleanup:item:{c['channel_id']}:{c['thread_ts']}:{page}:{chan_filter}:{rcmin}"))
+        # Nav
         nav = []
         if page > 0:
-            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"cleanup:page:{page-1}"))
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"cleanup:page:{page-1}:{chan_filter}:{rcmin}"))
         if end < len(cands):
-            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"cleanup:page:{page+1}"))
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"cleanup:page:{page+1}:{chan_filter}:{rcmin}"))
         if nav:
             kb.row(*nav)
         kb.add(InlineKeyboardButton(text="Готово", callback_data="cleanup:done"))
@@ -147,17 +175,47 @@ def register_handlers(b: telebot.TeleBot) -> None:
                 b.edit_message_text("✅ Перемещено в архив. Будет удалено через 7 дней.", chat_id=call.message.chat.id, message_id=call.message.message_id)
             elif action == 'select':
                 page = int(parts[2]) if len(parts) > 2 else 0
-                _render_select_page(call.message.chat.id, call.message.message_id, page)
+                chan_filter = parts[3] if len(parts) > 3 else '*'
+                rcmin = int(parts[4]) if len(parts) > 4 else 0
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin)
             elif action == 'page':
                 page = int(parts[2])
-                _render_select_page(call.message.chat.id, call.message.message_id, page)
+                chan_filter = parts[3] if len(parts) > 3 else '*'
+                rcmin = int(parts[4]) if len(parts) > 4 else 0
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin)
             elif action == 'item':
                 ch_id = parts[2]
                 th_ts = parts[3]
                 page = int(parts[4]) if len(parts) > 4 else 0
+                chan_filter = parts[5] if len(parts) > 5 else '*'
+                rcmin = int(parts[6]) if len(parts) > 6 else 0
                 soft_delete_threads([{ "thread_ts": th_ts, "channel_id": ch_id }])
                 b.answer_callback_query(call.id, "Удалено в архив")
-                _render_select_page(call.message.chat.id, call.message.message_id, page)
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, rcmin)
+            elif action == 'cyclechan':
+                page = int(parts[2])
+                chan_filter = parts[3]
+                rcmin = int(parts[4]) if len(parts) > 4 else 0
+                chans = ['*'] + _unique_channels()
+                try:
+                    idx = chans.index(chan_filter)
+                except ValueError:
+                    idx = 0
+                next_chan = chans[(idx + 1) % len(chans)] if chans else '*'
+                _render_select_page(call.message.chat.id, call.message.message_id, page, next_chan, rcmin)
+                b.answer_callback_query(call.id)
+            elif action == 'cyclerc':
+                page = int(parts[2])
+                chan_filter = parts[3]
+                rcmin = int(parts[4]) if len(parts) > 4 else 0
+                options = [0, 1, 3, 5]
+                try:
+                    idx = options.index(rcmin)
+                except ValueError:
+                    idx = 0
+                next_rc = options[(idx + 1) % len(options)]
+                _render_select_page(call.message.chat.id, call.message.message_id, page, chan_filter, next_rc)
+                b.answer_callback_query(call.id)
             elif action == 'done':
                 b.answer_callback_query(call.id, "Готово")
                 b.edit_message_text("✅ Выбранные треды перемещены в архив.", chat_id=call.message.chat.id, message_id=call.message.message_id)
