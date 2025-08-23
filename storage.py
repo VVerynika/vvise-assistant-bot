@@ -17,10 +17,11 @@ _SCHEMA_VERSION = 2
 def _empty_db() -> Dict[str, Any]:
     return {
         "schema_version": _SCHEMA_VERSION,
-        "slack_threads": [],  # list of {thread_ts, channel, channel_id, parent_user_id, reply_count, has_response, messages: [{user,text,ts}], priority?, no_response_secs?}
+        "slack_threads": [],
         "clickup_tasks": [],
-        "deleted_slack_threads": [],  # archived for retention period
+        "deleted_slack_threads": [],
         "analysis_state": {"last_analysis_ts": None, "slack_count": 0, "clickup_count": 0, "db_hash": None},
+        "ingest_config": {"slack_oldest_ts": None, "clickup_since_ms": None},
     }
 
 
@@ -45,10 +46,9 @@ def _load_db() -> Dict[str, Any]:
             db = _empty_db()
     except Exception:
         db = _empty_db()
-    # migrate
     if db.get("schema_version") != _SCHEMA_VERSION:
         migrated = _empty_db()
-        for key in ("slack_threads", "clickup_tasks", "deleted_slack_threads", "analysis_state"):
+        for key in ("slack_threads", "clickup_tasks", "deleted_slack_threads", "analysis_state", "ingest_config"):
             if key in db:
                 migrated[key] = db[key]
         db = migrated
@@ -61,7 +61,12 @@ def _save_db(db: Dict[str, Any]) -> None:
     db["schema_version"] = _SCHEMA_VERSION
     db["analysis_state"]["slack_count"] = len(db.get("slack_threads", []))
     db["analysis_state"]["clickup_count"] = len(db.get("clickup_tasks", []))
-    db["analysis_state"]["db_hash"] = _compute_hash({"slack_threads": db.get("slack_threads", []), "clickup_tasks": db.get("clickup_tasks", []), "deleted_slack_threads": db.get("deleted_slack_threads", [])})
+    db["analysis_state"]["db_hash"] = _compute_hash({
+        "slack_threads": db.get("slack_threads", []),
+        "clickup_tasks": db.get("clickup_tasks", []),
+        "deleted_slack_threads": db.get("deleted_slack_threads", []),
+        "ingest_config": db.get("ingest_config", {}),
+    })
     tmp = _DB_PATH + ".tmp"
     with _lock:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -116,7 +121,6 @@ def propose_cleanup(now_ts: Optional[float] = None) -> Dict[str, Any]:
     threshold_ts = now_ts - CLEANUP_OLDER_THAN_DAYS * 86400
     candidates = []
     for th in db.get("slack_threads", []):
-        # newest message ts in thread
         msgs = th.get("messages", [])
         last_ts = None
         for m in msgs:
@@ -160,3 +164,39 @@ def purge_deleted_expired(now_ts: Optional[float] = None) -> int:
     db["deleted_slack_threads"] = keep
     _save_db(db)
     return removed
+
+
+# Ingest config helpers
+
+def set_slack_oldest_days(days: int) -> None:
+    db = _load_db()
+    db.setdefault("ingest_config", {})["slack_oldest_ts"] = time.time() - days * 86400
+    _save_db(db)
+
+
+def set_slack_oldest_ts(ts: float) -> None:
+    db = _load_db()
+    db.setdefault("ingest_config", {})["slack_oldest_ts"] = ts
+    _save_db(db)
+
+
+def get_slack_oldest_ts() -> Optional[float]:
+    db = _load_db()
+    return (db.get("ingest_config") or {}).get("slack_oldest_ts")
+
+
+def set_clickup_since_days(days: int) -> None:
+    db = _load_db()
+    db.setdefault("ingest_config", {})["clickup_since_ms"] = int((time.time() - days * 86400) * 1000)
+    _save_db(db)
+
+
+def set_clickup_since_ms(ms: int) -> None:
+    db = _load_db()
+    db.setdefault("ingest_config", {})["clickup_since_ms"] = ms
+    _save_db(db)
+
+
+def get_clickup_since_ms() -> Optional[int]:
+    db = _load_db()
+    return (db.get("ingest_config") or {}).get("clickup_since_ms")

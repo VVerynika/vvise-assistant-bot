@@ -2,7 +2,7 @@ import os
 import time
 import json
 import requests
-from storage import append_slack_thread
+from storage import append_slack_thread, get_slack_oldest_ts
 
 STATE_PATH = os.getenv("SLACK_STATE_FILE", "/workspace/.slack_state.json")
 
@@ -37,6 +37,7 @@ def run():
     backoff_seconds = 30
     state = _load_state()
     last_ts_by_channel = state.get("last_ts_by_channel", {})
+    manual_oldest = get_slack_oldest_ts()
 
     while True:
         try:
@@ -61,13 +62,14 @@ def run():
                 if not next_cursor:
                     break
 
-            # Для каждого канала, читаем историю с учётом last_ts
+            # Для каждого канала, читаем историю с учётом last_ts и manual_oldest
             for channel in channels:
                 ch_id = channel['id']
                 latest_known = last_ts_by_channel.get(ch_id)
+                oldest_ts = manual_oldest or latest_known
                 history_url = f"https://slack.com/api/conversations.history?channel={ch_id}&limit=200"
-                if latest_known:
-                    history_url += f"&oldest={latest_known}"
+                if oldest_ts:
+                    history_url += f"&oldest={oldest_ts}"
                 next_cursor = None
                 newest_seen_ts = latest_known
 
@@ -93,12 +95,9 @@ def run():
                         parent_user = msg.get('user') if is_parent else None
 
                         thread_msgs = []
-                        # собрать все сообщения треда, если является родителем
                         if is_parent:
-                            # Добавить первое сообщение
                             thread_msgs.append({"user": msg.get('user'), "text": msg.get('text') or '', "ts": msg.get('ts')})
                             if reply_count and reply_count > 0:
-                                # получить ответы треда
                                 repl_url = f"https://slack.com/api/conversations.replies?channel={ch_id}&ts={parent_ts}&limit=200"
                                 rcur = None
                                 while True:
@@ -113,14 +112,12 @@ def run():
                                         print(f"[Slack error] {r.status_code} {r.text[:200]}")
                                         break
                                     rdata = r.json()
-                                    for rm in rdata.get('messages', [])[1:]:  # [0] — родитель уже учтён
+                                    for rm in rdata.get('messages', [])[1:]:
                                         thread_msgs.append({"user": rm.get('user'), "text": rm.get('text') or '', "ts": rm.get('ts')})
                                     rcur = (rdata.get("response_metadata") or {}).get("next_cursor") or None
                                     if not rcur:
                                         break
-                            # has_response
                             has_response = (len(thread_msgs) > 1)
-                            # сохранение треда
                             append_slack_thread({
                                 "thread_ts": parent_ts,
                                 "channel_id": ch_id,
@@ -131,7 +128,6 @@ def run():
                                 "messages": thread_msgs,
                             })
 
-                        # отметим последний ts
                         try:
                             tsf = float(msg.get("ts"))
                             if tsf and (newest_seen_ts is None or tsf > newest_seen_ts):

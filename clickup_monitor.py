@@ -2,7 +2,7 @@ import os
 import time
 import json
 import requests
-from storage import append_clickup_task
+from storage import upsert_clickup_task, get_clickup_since_ms
 
 STATE_PATH = os.getenv("CLICKUP_STATE_FILE", "/workspace/.clickup_state.json")
 
@@ -14,7 +14,6 @@ def _load_state():
                 return json.load(f)
     except Exception:
         pass
-    # date_updated_gt in milliseconds
     return {"date_updated_gt": None}
 
 
@@ -38,15 +37,16 @@ def run():
     backoff_seconds = 60
     state = _load_state()
     date_updated_gt = state.get("date_updated_gt")
+    manual_since_ms = get_clickup_since_ms() or date_updated_gt
 
     while True:
         try:
             page = 0
-            newest_update = date_updated_gt
+            newest_update = manual_since_ms
             while True:
                 url = f"https://api.clickup.com/api/v2/folder/{folder_id}/task?page={page}&subtasks=true&include_closed=true"
-                if date_updated_gt:
-                    url += f"&date_updated_gt={date_updated_gt}"
+                if manual_since_ms:
+                    url += f"&date_updated_gt={manual_since_ms}"
                 resp = requests.get(url, headers=headers, timeout=20)
                 if not resp.ok:
                     print(f"[ClickUp error] {resp.status_code} {resp.text[:200]}")
@@ -57,6 +57,7 @@ def run():
                 if not tasks:
                     break
                 for task in tasks:
+                    tid = task.get('id')
                     name = task.get('name')
                     status = (task.get('status') or {}).get('status')
                     due = task.get('due_date')
@@ -65,15 +66,38 @@ def run():
                         due_ts = int(due) / 1000.0 if due else None
                     except Exception:
                         due_ts = None
-                    append_clickup_task({
-                        "id": task.get('id'),
+                    # checklists
+                    checklists = []
+                    try:
+                        ckl = requests.get(f"https://api.clickup.com/api/v2/task/{tid}/checklist", headers=headers, timeout=20)
+                        if ckl.ok:
+                            cldata = ckl.json()
+                            checklists = cldata.get('checklists', []) or cldata.get('checklist', []) or []
+                    except Exception:
+                        pass
+                    # comments
+                    comments = []
+                    try:
+                        cm = requests.get(f"https://api.clickup.com/api/v2/task/{tid}/comment", headers=headers, timeout=20)
+                        if cm.ok:
+                            cdata = cm.json()
+                            comments = cdata.get('comments', []) or []
+                    except Exception:
+                        pass
+                    description = task.get('text_content') or task.get('description') or ''
+                    # upsert enriched
+                    upsert_clickup_task({
+                        "id": tid,
                         "name": name,
-                        "description": task.get('text_content') or task.get('description') or '',
+                        "description": description,
                         "status": {"status": status},
                         "due_date_ts": due_ts,
+                        "checklists": checklists,
+                        "comments": comments,
+                        "assignees": task.get('assignees') or [],
+                        "creator": task.get('creator') or {},
                     })
                     print(f"[ClickUp] {name} — {status}")
-                    # track newest date_updated across tasks
                     try:
                         updated = task.get("date_updated")
                         if updated:
@@ -85,8 +109,8 @@ def run():
                 page += 1
 
             if newest_update and newest_update != date_updated_gt:
-                date_updated_gt = newest_update
-                _save_state({"date_updated_gt": date_updated_gt})
+                state['date_updated_gt'] = newest_update
+                _save_state(state)
 
             time.sleep(90)
         except Exception as e:
