@@ -132,7 +132,14 @@ def propose_cleanup(now_ts: Optional[float] = None) -> Dict[str, Any]:
         prio = th.get("priority", 0)
         no_resp = th.get("no_response_secs", 0)
         if last_ts and last_ts < threshold_ts and prio <= CLEANUP_PRIORITY_MAX and no_resp <= CLEANUP_NO_RESPONSE_SECS:
-            candidates.append({"thread_ts": th.get("thread_ts"), "channel_id": th.get("channel_id"), "channel": th.get("channel"), "last_ts": last_ts})
+            candidates.append({
+                "thread_ts": th.get("thread_ts"),
+                "channel_id": th.get("channel_id"),
+                "channel": th.get("channel"),
+                "last_ts": last_ts,
+                "reply_count": th.get("reply_count", 0),
+                "thread_len": len(msgs),
+            })
     return {"candidates": candidates, "count": len(candidates)}
 
 

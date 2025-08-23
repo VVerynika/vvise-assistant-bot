@@ -18,6 +18,13 @@ def _safe_text(message) -> str:
         return ""
 
 
+def _fmt_ts(tsf: float) -> str:
+    try:
+        return time.strftime('%Y-%m-%d %H:%M', time.localtime(float(tsf)))
+    except Exception:
+        return str(tsf)
+
+
 def register_handlers(b: telebot.TeleBot) -> None:
     @b.message_handler(commands=['start'])
     def handle_start(message):
@@ -114,7 +121,7 @@ def register_handlers(b: telebot.TeleBot) -> None:
         page_items = cands[start:end]
         kb = InlineKeyboardMarkup()
         for c in page_items:
-            label = f"#{c['channel']} ts={c['thread_ts']}"
+            label = f"#{c['channel']} | {_fmt_ts(c['last_ts'])} | repl:{c.get('reply_count',0)} len:{c.get('thread_len',0)}"
             kb.add(InlineKeyboardButton(text=label, callback_data=f"cleanup:item:{c['channel_id']}:{c['thread_ts']}:{page}"))
         nav = []
         if page > 0:
