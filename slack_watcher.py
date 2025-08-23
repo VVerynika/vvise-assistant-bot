@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import re
 import requests
 from storage import append_slack_thread, get_slack_oldest_ts
 
@@ -118,6 +119,14 @@ def run():
                                     if not rcur:
                                         break
                             has_response = (len(thread_msgs) > 1)
+                            # mentions
+                            mention_count = 0
+                            try:
+                                for m in thread_msgs:
+                                    t = m.get('text') or ''
+                                    mention_count += len(re.findall(r"<@[^>]+>", t))
+                            except Exception:
+                                mention_count = 0
                             append_slack_thread({
                                 "thread_ts": parent_ts,
                                 "channel_id": ch_id,
@@ -125,6 +134,8 @@ def run():
                                 "parent_user_id": parent_user,
                                 "reply_count": reply_count or 0,
                                 "has_response": has_response,
+                                "mention_count": mention_count,
+                                "has_mentions": mention_count > 0,
                                 "messages": thread_msgs,
                             })
 

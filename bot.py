@@ -4,6 +4,7 @@ import telebot
 from google_logger import log_message
 from notifier import send_startup_status
 from storage import set_slack_oldest_days, set_slack_oldest_ts, set_clickup_since_days, set_clickup_since_ms, propose_cleanup, soft_delete_threads
+from config import IMPORTANT_SLACK_CHANNEL_BUGS
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = None
@@ -130,7 +131,8 @@ def register_handlers(b: telebot.TeleBot) -> None:
             from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton(text="Удалить всё", callback_data="cleanup:all"))
-            kb.add(InlineKeyboardButton(text="Удалить выборочно", callback_data="cleanup:select:0:*:0"))
+            # preset filter to bugs channel
+            kb.add(InlineKeyboardButton(text="Удалить выборочно", callback_data=f"cleanup:select:0:{IMPORTANT_SLACK_CHANNEL_BUGS}:0"))
             kb.add(InlineKeyboardButton(text="Отмена", callback_data="cleanup:cancel"))
             b.send_message(message.chat.id, f"Найдено кандидатов: {count}. Выберите действие:", reply_markup=kb)
         except Exception as e:
@@ -138,6 +140,7 @@ def register_handlers(b: telebot.TeleBot) -> None:
 
     def _render_select_page(chat_id, message_id, page, chan_filter, rcmin):
         from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+        props = propose_cleanup()
         cands = _filter_candidates(chan_filter, rcmin)
         start = page * PAGE_SIZE
         end = start + PAGE_SIZE
@@ -148,7 +151,9 @@ def register_handlers(b: telebot.TeleBot) -> None:
         kb.add(InlineKeyboardButton(text=f"Мин. ответы: {rcmin}", callback_data=f"cleanup:cyclerc:{page}:{chan_filter}:{rcmin}"))
         # Items
         for c in page_items:
-            label = f"#{c['channel']} | {_fmt_ts(c['last_ts'])} | repl:{c.get('reply_count',0)} len:{c.get('thread_len',0)}"
+            # mark mentions with a dot
+            mention_mark = " • @" if c.get('mention_count', 0) else ''
+            label = f"#{c['channel']}{mention_mark} | {_fmt_ts(c['last_ts'])} | repl:{c.get('reply_count',0)} len:{c.get('thread_len',0)}"
             kb.add(InlineKeyboardButton(text=label, callback_data=f"cleanup:item:{c['channel_id']}:{c['thread_ts']}:{page}:{chan_filter}:{rcmin}"))
         # Nav
         nav = []
