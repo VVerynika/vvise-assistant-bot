@@ -2,7 +2,7 @@ import os
 import time
 import json
 import requests
-from storage import append_slack_message
+from storage import append_slack_thread
 
 STATE_PATH = os.getenv("SLACK_STATE_FILE", "/workspace/.slack_state.json")
 
@@ -85,21 +85,60 @@ def run():
                         break
                     data = resp.json()
                     messages = data.get("messages", [])
-                    # Slack возвращает от новых к старым; выведем в обратном порядке для хронологии
-                    for msg in reversed(messages):
-                        text = msg.get('text') or ''
-                        append_slack_message({
-                            "channel": channel['name'],
-                            "channel_id": ch_id,
-                            "user": msg.get('user'),
-                            "text": text,
-                            "ts": msg.get('ts'),
-                            "last_reply_ts": (msg.get('thread_ts') or msg.get('ts')),
-                        })
-                        print(f"[Slack] #{channel['name']}: {text}")
-                        ts = msg.get("ts")
-                        if ts and (newest_seen_ts is None or ts > newest_seen_ts):
-                            newest_seen_ts = ts
+                    # Сгруппируем в треды
+                    for msg in messages:
+                        parent_ts = msg.get('thread_ts') or msg.get('ts')
+                        is_parent = parent_ts == msg.get('ts')
+                        reply_count = msg.get('reply_count') if is_parent else None
+                        parent_user = msg.get('user') if is_parent else None
+
+                        thread_msgs = []
+                        # собрать все сообщения треда, если является родителем
+                        if is_parent:
+                            # Добавить первое сообщение
+                            thread_msgs.append({"user": msg.get('user'), "text": msg.get('text') or '', "ts": msg.get('ts')})
+                            if reply_count and reply_count > 0:
+                                # получить ответы треда
+                                repl_url = f"https://slack.com/api/conversations.replies?channel={ch_id}&ts={parent_ts}&limit=200"
+                                rcur = None
+                                while True:
+                                    rurl = repl_url + (f"&cursor={rcur}" if rcur else "")
+                                    r = requests.get(rurl, headers=headers, timeout=20)
+                                    if r.status_code == 429:
+                                        retry_after = int(r.headers.get("Retry-After", "30"))
+                                        print(f"[Slack 429] conversations.replies, sleep {retry_after}s")
+                                        time.sleep(retry_after)
+                                        continue
+                                    if not r.ok:
+                                        print(f"[Slack error] {r.status_code} {r.text[:200]}")
+                                        break
+                                    rdata = r.json()
+                                    for rm in rdata.get('messages', [])[1:]:  # [0] — родитель уже учтён
+                                        thread_msgs.append({"user": rm.get('user'), "text": rm.get('text') or '', "ts": rm.get('ts')})
+                                    rcur = (rdata.get("response_metadata") or {}).get("next_cursor") or None
+                                    if not rcur:
+                                        break
+                            # has_response
+                            has_response = (len(thread_msgs) > 1)
+                            # сохранение треда
+                            append_slack_thread({
+                                "thread_ts": parent_ts,
+                                "channel_id": ch_id,
+                                "channel": channel['name'],
+                                "parent_user_id": parent_user,
+                                "reply_count": reply_count or 0,
+                                "has_response": has_response,
+                                "messages": thread_msgs,
+                            })
+
+                        # отметим последний ts
+                        try:
+                            tsf = float(msg.get("ts"))
+                            if tsf and (newest_seen_ts is None or tsf > newest_seen_ts):
+                                newest_seen_ts = tsf
+                        except Exception:
+                            pass
+
                     next_cursor = (data.get("response_metadata") or {}).get("next_cursor") or None
                     if not next_cursor:
                         break
