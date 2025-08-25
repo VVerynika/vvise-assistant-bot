@@ -5,10 +5,6 @@ from google_logger import log_message
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-@bot.message_handler(func=lambda m: True)
-def echo_all(message):
-    print(f"Your chat id is: {message.chat.id}")
-
 bot = None
 
 def _safe_text(message) -> str:
