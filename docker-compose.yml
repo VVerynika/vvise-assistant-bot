@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  bot-assistant:
+    build: .
+    container_name: bot-assistant
+    restart: unless-stopped
+    environment:
+      - SLACK_TOKEN=${SLACK_TOKEN}
+      - CLICKUP_API_TOKEN=${CLICKUP_API_TOKEN}
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}
+      - SERVICE_ACCOUNT_JSON_PATH=${SERVICE_ACCOUNT_JSON_PATH}
+      - CLICKUP_WORKSPACE_ID=${CLICKUP_WORKSPACE_ID}
+      - TELEGRAM_AUTHORIZED_USERS=${TELEGRAM_AUTHORIZED_USERS}
+    volumes:
+      - ./data:/workspace/data
+      - ./logs:/workspace/logs
+      - ${SERVICE_ACCOUNT_JSON_PATH}:/workspace/service-account.json:ro
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: bot-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: bot-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=bot_assistant
+      - POSTGRES_USER=botuser
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-botpass123}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botuser -d bot_assistant"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: bot-nginx
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./static:/var/www/html:ro
+    networks:
+      - bot-network
+    depends_on:
+      - bot-assistant
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  redis-data:
+  postgres-data:
+
+networks:
+  bot-network:
+    driver: bridge
