@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+
+# Local data and logs
+*.db
+*.sqlite
+/workspace/*.db
+/workspace/*.log
+render_events.log
+render_events_poller.out
+
+# State files
+.slack_state.json
+.clickup_state.json
+.render_events_cursor
+
+# Secrets
+service_account.json
+.env
+
+# Venv
+.venv/
+
