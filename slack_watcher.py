@@ -13,6 +13,7 @@ from storage import (
     upsert_content_index,
     set_status,
 )
+from lifecycle import is_stopping, wait
 
 def _state_path_default(name: str) -> str:
     base = os.getenv("STATE_DIR") or os.getenv("DATA_DIR") or "/var/tmp"
@@ -80,7 +81,7 @@ def run():
     except Exception:
         pass
 
-    while True:
+    while not is_stopping():
         try:
             # Periodically refresh users
             try:
@@ -272,7 +273,9 @@ def run():
                     last_ts_by_channel[ch_id] = newest_seen_ts
                     _save_state({"last_ts_by_channel": last_ts_by_channel})
 
-            time.sleep(60)
+            if wait(60):
+                break
         except Exception as e:
             print(f"[Slack exception] {e}")
-            time.sleep(backoff_seconds)
+            if wait(backoff_seconds):
+                break

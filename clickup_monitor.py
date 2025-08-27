@@ -12,6 +12,7 @@ from storage import (
     upsert_content_index,
     set_status,
 )
+from lifecycle import is_stopping, wait
 
 def _state_path_default(name: str) -> str:
     base = os.getenv("STATE_DIR") or os.getenv("DATA_DIR") or "/var/tmp"
@@ -71,7 +72,7 @@ def run():
     except Exception:
         pass
 
-    while True:
+    while not is_stopping():
         try:
             page = 0
             newest_update = date_updated_gt
@@ -174,8 +175,10 @@ def run():
                 date_updated_gt = newest_update
                 _save_state({"date_updated_gt": date_updated_gt})
 
-            time.sleep(90)
+            if wait(90):
+                break
         except Exception as e:
             print(f"[ClickUp exception] {e}")
-            time.sleep(backoff_seconds)
+            if wait(backoff_seconds):
+                break
 

@@ -10,6 +10,7 @@ from analyzer import run_similarity_and_clusters
 from sheets_sync import sync_snapshot_to_sheet
 from signals import stalled_stats, find_unread_dms, should_send_alert
 from notifier import send_alert
+from lifecycle import stop as request_stop
 
 stop_event = Event()
 
@@ -26,9 +27,9 @@ signal.signal(signal.SIGINT, handle_signal)
 if __name__ == "__main__":
 
     # Telegram bot thread (safe even if token missing)
-    t_bot = Thread(target=bot.run_polling, daemon=True)
-    t_slack = Thread(target=slack_watcher.run, daemon=True)
-    t_click = Thread(target=clickup_monitor.run, daemon=True)
+    t_bot = Thread(target=bot.run_polling, daemon=False)
+    t_slack = Thread(target=slack_watcher.run, daemon=False)
+    t_click = Thread(target=clickup_monitor.run, daemon=False)
 
     t_bot.start()
     t_slack.start()
@@ -71,5 +72,18 @@ if __name__ == "__main__":
                     print(f"[Main] alerts error: {e}")
             time.sleep(5)
     finally:
-        print("Main exiting. Threads are daemons and will stop with process.")
+        print("Main exiting. Signaling workers to stop...")
+        request_stop()
+        try:
+            t_slack.join(timeout=10)
+        except Exception:
+            pass
+        try:
+            t_click.join(timeout=10)
+        except Exception:
+            pass
+        try:
+            t_bot.join(timeout=5)
+        except Exception:
+            pass
         sys.exit(0)

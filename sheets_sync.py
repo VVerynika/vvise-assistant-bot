@@ -1,11 +1,11 @@
 import os
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 
 import gspread
 from google.oauth2.service_account import Credentials
 
-from storage import list_status_snapshot
+from storage import list_status_snapshot, set_muted
 
 
 def _get_creds():
@@ -55,9 +55,32 @@ def sync_snapshot_to_sheet() -> None:
             "Status",
             "Last Seen",
             "Labels",
+            "Muted",
         ]
         ws.resize(rows=2, cols=len(header))
         ws.update('A1', [header])
+
+        # Pull current sheet values to catch Muted toggles from users
+        sheet_muted_by_id: Dict[int, bool] = {}
+        try:
+            existing = ws.get_all_values()
+            if existing:
+                ex_header = existing[0]
+                ex_rows = existing[1:]
+                id_idx = ex_header.index("ID") if "ID" in ex_header else -1
+                muted_idx = ex_header.index("Muted") if "Muted" in ex_header else -1
+                if id_idx >= 0 and muted_idx >= 0:
+                    for row in ex_rows:
+                        if id_idx < len(row) and muted_idx < len(row):
+                            try:
+                                item_id = int(row[id_idx])
+                            except Exception:
+                                continue
+                            val = (row[muted_idx] or '').strip().lower()
+                            muted = val in ("true", "1", "yes", "да", "y", "x", "✓", "✔", "muted")
+                            sheet_muted_by_id[item_id] = muted
+        except Exception as e:
+            print(f"[Sheets] read existing failed: {e}")
 
         rows = list_status_snapshot(limit=1000)
         values: List[List[str]] = []
@@ -65,12 +88,23 @@ def sync_snapshot_to_sheet() -> None:
             last_seen = int(r[7]) if r[7] is not None else None
             last_seen_str = datetime.fromtimestamp(last_seen).strftime('%Y-%m-%d %H:%M:%S') if last_seen else ''
             labels = r[8] or ''
+            item_id = int(r[0])
+            # Apply user's muted flag from sheet into DB
+            try:
+                if item_id in sheet_muted_by_id:
+                    set_muted(item_id, sheet_muted_by_id[item_id])
+            except Exception as e:
+                print(f"[Sheets] set_muted failed for {item_id}: {e}")
+
+            muted_final = 'muted' in labels.lower() or sheet_muted_by_id.get(item_id, False)
+
             values.append([
-                str(r[0]), str(r[1]), str(r[2] or ''), r[3] or '', r[4] or '',
+                str(item_id), str(r[1]), str(r[2] or ''), r[3] or '', r[4] or '',
                 str(r[5] if r[5] is not None else ''),
                 r[6] or '',
                 last_seen_str,
                 labels,
+                'TRUE' if muted_final else 'FALSE',
             ])
         if values:
             ws.update(f'A2', values)
