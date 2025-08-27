@@ -13,7 +13,16 @@ from storage import (
     set_status,
 )
 
-STATE_PATH = os.getenv("CLICKUP_STATE_FILE", "/workspace/.clickup_state.json")
+def _state_path_default(name: str) -> str:
+    base = os.getenv("STATE_DIR") or os.getenv("DATA_DIR") or "/var/tmp"
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(base, name)
+
+
+STATE_PATH = os.getenv("CLICKUP_STATE_FILE", _state_path_default(".clickup_state.json"))
 
 
 def _load_state():

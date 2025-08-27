@@ -7,9 +7,19 @@ import urllib.error
 RENDER_API_KEY = os.getenv("RENDER_API_KEY")
 SERVICE_ID = os.getenv("RENDER_SERVICE_ID", "srv-d2je5fv5r7bs73eouf8g")
 EVENTS_URL_BASE = f"https://api.render.com/v1/services/{SERVICE_ID}/events?limit=50"
-LOG_PATH = os.getenv("RENDER_EVENTS_LOG", "/workspace/render_events.log")
+
+def _state_dir() -> str:
+    base = os.getenv("STATE_DIR") or os.getenv("DATA_DIR") or "/var/tmp"
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        pass
+    return base
+
+
+LOG_PATH = os.getenv("RENDER_EVENTS_LOG", os.path.join(_state_dir(), "render_events.log"))
 POLL_INTERVAL_SECONDS = int(os.getenv("RENDER_POLL_INTERVAL_SECONDS", "10"))
-STATE_PATH = os.getenv("RENDER_EVENTS_STATE", "/workspace/.render_events_cursor")
+STATE_PATH = os.getenv("RENDER_EVENTS_STATE", os.path.join(_state_dir(), ".render_events_cursor"))
 
 
 def load_last_cursor() -> str:

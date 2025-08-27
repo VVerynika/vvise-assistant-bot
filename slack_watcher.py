@@ -14,7 +14,16 @@ from storage import (
     set_status,
 )
 
-STATE_PATH = os.getenv("SLACK_STATE_FILE", "/workspace/.slack_state.json")
+def _state_path_default(name: str) -> str:
+    base = os.getenv("STATE_DIR") or os.getenv("DATA_DIR") or "/var/tmp"
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(base, name)
+
+
+STATE_PATH = os.getenv("SLACK_STATE_FILE", _state_path_default(".slack_state.json"))
 FETCH_DM_AND_IM = os.getenv("SLACK_FETCH_DMS", "1") == "1"
 CHANNEL_TYPES = os.getenv(
     "SLACK_CHANNEL_TYPES",

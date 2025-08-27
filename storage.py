@@ -6,7 +6,27 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
-DB_PATH = os.getenv("DB_PATH", "/workspace/data.db")
+def _detect_db_path() -> str:
+    # 1) Explicit DB_PATH if provided
+    explicit = os.getenv("DB_PATH")
+    if explicit:
+        parent = os.path.dirname(explicit) or "."
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except Exception:
+            pass
+        return explicit
+    # 2) DATA_DIR or safe default writable dir
+    data_dir = os.getenv("DATA_DIR") or "/var/tmp"
+    try:
+        os.makedirs(os.path.join(data_dir, "vvise-assistant-bot"), exist_ok=True)
+        return os.path.join(data_dir, "vvise-assistant-bot", "data.db")
+    except Exception:
+        # 3) Fallback to current working directory
+        return os.path.abspath(os.path.join(os.getcwd(), "data.db"))
+
+
+DB_PATH = _detect_db_path()
 
 
 _local = threading.local()
@@ -15,10 +35,21 @@ _local = threading.local()
 def _get_connection() -> sqlite3.Connection:
     conn: Optional[sqlite3.Connection] = getattr(_local, "conn", None)
     if conn is None:
+        # Ensure parent directory exists
+        try:
+            parent = os.path.dirname(DB_PATH) or "."
+            os.makedirs(parent, exist_ok=True)
+        except Exception:
+            pass
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
+        # Enable WAL if possible; ignore if FS doesn't support
+        try:
+            if os.getenv("DISABLE_DB_WAL") != "1":
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+        except Exception:
+            pass
         setattr(_local, "conn", conn)
     return conn
 
