@@ -8,7 +8,7 @@ import clickup_monitor
 from datetime import datetime
 from analyzer import run_similarity_and_clusters
 from sheets_sync import sync_snapshot_to_sheet
-from signals import detect_stalled_issues, find_unread_dms
+from signals import stalled_stats, find_unread_dms, should_send_alert
 from notifier import send_alert
 
 stop_event = Event()
@@ -58,12 +58,14 @@ if __name__ == "__main__":
             # Alerts every 5 minutes
             if now - last_alerts > 300:
                 try:
-                    stalled = detect_stalled_issues(days_without_update=14)
-                    if stalled:
-                        send_alert(f"Застрявших задач: {len(stalled)}. Пример: #{stalled[0]}")
+                    count, sample = stalled_stats(days_without_update=14, sample_size=3)
+                    if count and should_send_alert("stalled", count, min_interval_seconds=21600):
+                        example = ", ".join([f"#{x}" for x in sample])
+                        send_alert(f"Застрявших задач: {count}. Примеры: {example}")
                     dms = find_unread_dms()
-                    if dms:
-                        send_alert(f"Есть личные сообщения, требующие внимания: {len(dms)}. Пример: #{dms[0]}")
+                    if dms and should_send_alert("dms", len(dms), min_interval_seconds=21600):
+                        example = ", ".join([f"#{x}" for x in dms[:3]])
+                        send_alert(f"Есть личные сообщения, требующие внимания: {len(dms)}. Примеры: {example}")
                     last_alerts = now
                 except Exception as e:
                     print(f"[Main] alerts error: {e}")
