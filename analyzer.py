@@ -75,5 +75,6 @@ def run_similarity_and_clusters(
         # Base priority heuristic: longer text and recent update get higher weight
         text_len = len(corpus[i])
         priority = 999 - min(998, int(text_len / 500))
+        # do not change labels (keep muted flag)
         set_status(item_ids[i], priority=priority, status=None, last_seen=now, labels=None)
 

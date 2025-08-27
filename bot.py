@@ -50,12 +50,47 @@ def register_handlers(b: telebot.TeleBot) -> None:
     @b.message_handler(commands=['top'])
     def handle_top(message):
         try:
-            rows = list_status_snapshot(limit=20)
+            rows = list_status_snapshot(limit=50)
             lines = []
-            for r in rows[:10]:
+            shown = 0
+            for r in rows:
+                labels = (r[8] or '')
+                if 'muted' in labels:
+                    continue
                 lines.append(f"#{r[0]} [{r[1]}] p={r[5] if r[5] is not None else ''} — {r[3] or ''}")
+                shown += 1
+                if shown >= 10:
+                    break
             reply = "\n".join(lines) or "Нет данных"
             b.reply_to(message, reply[:4000])
+        except Exception as e:
+            b.reply_to(message, f"Ошибка: {e}")
+
+    @b.message_handler(commands=['mute'])
+    def handle_mute(message):
+        try:
+            parts = (message.text or '').split()
+            if len(parts) < 2:
+                b.reply_to(message, "Использование: /mute <ID>")
+                return
+            item_id = int(parts[1])
+            from storage import set_muted
+            set_muted(item_id, True)
+            b.reply_to(message, f"#{item_id} помечен как неважный (muted)")
+        except Exception as e:
+            b.reply_to(message, f"Ошибка: {e}")
+
+    @b.message_handler(commands=['unmute'])
+    def handle_unmute(message):
+        try:
+            parts = (message.text or '').split()
+            if len(parts) < 2:
+                b.reply_to(message, "Использование: /unmute <ID>")
+                return
+            item_id = int(parts[1])
+            from storage import set_muted
+            set_muted(item_id, False)
+            b.reply_to(message, f"#{item_id} снова участвует в статистике")
         except Exception as e:
             b.reply_to(message, f"Ошибка: {e}")
 

@@ -475,6 +475,31 @@ def replace_clusters(label_by_item: Dict[int, int], score_by_item: Optional[Dict
             )
 
 
+def get_labels(item_id: int) -> List[str]:
+    with db_cursor() as cur:
+        cur.execute("SELECT labels FROM analysis_status WHERE item_id = ?", (item_id,))
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return []
+        try:
+            data = json.loads(row[0])
+            if isinstance(data, list):
+                return [str(x) for x in data]
+        except Exception:
+            pass
+        return []
+
+
+def set_muted(item_id: int, muted: bool) -> None:
+    labels = get_labels(item_id)
+    has = "muted" in labels
+    if muted and not has:
+        labels.append("muted")
+    elif not muted and has:
+        labels = [x for x in labels if x != "muted"]
+    set_status(item_id, priority=None, status=None, last_seen=None, labels=labels)
+
+
 def _safe_int(value: Any) -> Optional[int]:
     try:
         if value is None:
